@@ -108,7 +108,7 @@ export default function SettingsPanel({
                 onChange={(e) => setVideoFormat(e.target.value)}
               >
                 <option value="mp4">MP4 (H.264)</option>
-                <option value="webm">WebM (VP9)</option>
+                <option value="webm">WebM (VP8)</option>
               </select>
             </div>
           </div>

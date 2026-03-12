@@ -82,8 +82,8 @@ self.onmessage = async function (e) {
    LOAD — fetch core JS (importScripts) + WASM, create module
    ---------------------------------------------------------- */
 async function handleLoad(cfg) {
-  var coreURL  = cfg.coreURL  || 'https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.6/dist/umd/ffmpeg-core.js';
-  var wasmURL  = cfg.wasmURL  || 'https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.6/dist/umd/ffmpeg-core.wasm';
+  var coreURL  = cfg.coreURL  || '/ffmpeg-core.js';
+  var wasmURL  = cfg.wasmURL  || '/ffmpeg-core.wasm';
 
   // importScripts works cross-origin in classic workers — no CORS Worker issue
   importScripts(coreURL);

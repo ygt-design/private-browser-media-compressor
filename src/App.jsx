@@ -47,6 +47,8 @@ export default function App() {
   const [videoFormat, setVideoFormat] = useState("mp4");
   const [progress, setProgress] = useState({ done: 0, total: 0, percent: 0 });
   const [progressDetail, setProgressDetail] = useState("");
+  const [videoElapsed, setVideoElapsed] = useState("");
+  const [videoPercent, setVideoPercent] = useState(-1);
   const [showProgress, setShowProgress] = useState(false);
   const [videoPulse, setVideoPulse] = useState(false);
   const [totalSavedText, setTotalSavedText] = useState("");
@@ -54,6 +56,8 @@ export default function App() {
   const nextIdRef = useRef(0);
   const videoEncoderRef = useRef(null);
   const videoReadyRef = useRef(false);
+  const cancelledRef = useRef(false);
+  const imageWorkerRef = useRef(null);
 
   const hasImages = useMemo(() => queue.some((f) => f.type === "image"), [queue]);
   const hasVideos = useMemo(() => queue.some((f) => f.type === "video"), [queue]);
@@ -69,17 +73,12 @@ export default function App() {
     }
   }, [imageFormat, lossless]);
 
+  // Cleanup only on unmount — not on every queue/results change
   useEffect(() => {
     return () => {
-      queue.forEach((item) => {
-        if (item.thumbUrl?.startsWith("blob:")) URL.revokeObjectURL(item.thumbUrl);
-      });
-      results.forEach((item) => {
-        if (item.downloadUrl) URL.revokeObjectURL(item.downloadUrl);
-      });
       if (videoEncoderRef.current) videoEncoderRef.current.terminate();
     };
-  }, [queue, results]);
+  }, []);
 
   const generateVideoThumb = (id, file) => {
     const video = document.createElement("video");
@@ -154,13 +153,19 @@ export default function App() {
   };
 
   const loadVideoEncoder = async () => {
-    if (videoReadyRef.current) return;
+    if (videoReadyRef.current && videoEncoderRef.current) return;
     setProgressDetail("Loading video encoder (~30 MB, first time only)...");
 
     const enc = new VideoEncoder();
     enc.onProgress = ({ progress: p }) => {
       if (p > 0 && p <= 1) {
-        setProgressDetail(`Encoding video... ${Math.round(p * 100)}%`);
+        const pct = Math.round(p * 100);
+        setVideoPercent(pct);
+        setProgress((prev) => {
+          const base = prev.total > 0 ? (prev.done / prev.total) * 100 : 0;
+          const slice = prev.total > 0 ? (1 / prev.total) * 100 : 0;
+          return { ...prev, percent: Math.round(base + slice * p) };
+        });
       }
     };
 
@@ -175,16 +180,41 @@ export default function App() {
     setProgress({ done, total, percent: pct });
   };
 
+  const cancelCompression = () => {
+    cancelledRef.current = true;
+
+    if (imageWorkerRef.current) {
+      imageWorkerRef.current.terminate();
+      imageWorkerRef.current = null;
+    }
+
+    if (videoEncoderRef.current) {
+      videoEncoderRef.current.terminate();
+      videoEncoderRef.current = null;
+      videoReadyRef.current = false;
+    }
+
+    // Reset UI directly — the async loop may be stuck on a hanging promise
+    setIsProcessing(false);
+    setShowProgress(false);
+    setProgressDetail("");
+    setVideoPulse(false);
+    setVideoElapsed("");
+    setVideoPercent(-1);
+    setTotalSavedText("Cancelled.");
+  };
+
   const startCompression = async () => {
     if (!queue.length || isProcessing) return;
 
+    cancelledRef.current = false;
     setIsProcessing(true);
     setShowProgress(true);
     setVideoPulse(false);
     setProgressDetail("");
     setResults((prev) => {
-      prev.forEach((item) => {
-        if (item.downloadUrl) URL.revokeObjectURL(item.downloadUrl);
+      prev.forEach((r) => {
+        if (r.downloadUrl) URL.revokeObjectURL(r.downloadUrl);
       });
       return [];
     });
@@ -215,13 +245,16 @@ export default function App() {
     }
 
     const imageWorker = new Worker("/worker.js");
+    imageWorkerRef.current = imageWorker;
 
     for (const item of queue) {
+      if (cancelledRef.current) break;
       const outputName = getOutputName(item.file.name, item.type, videoFormat, imageFormat);
 
       if (item.type === "image") {
         try {
           const arrayBuffer = await item.file.arrayBuffer();
+          if (cancelledRef.current) break;
           const result = await encodeImageInWorker(imageWorker, {
             id: item.id,
             fileName: outputName,
@@ -231,6 +264,7 @@ export default function App() {
             outputFormat: imageFormat,
           });
 
+          if (cancelledRef.current) break;
           if (result.success) {
             const blob = new Blob([result.resultBuffer], {
               type: result.outputMime || "image/webp",
@@ -256,6 +290,7 @@ export default function App() {
             });
           }
         } catch (err) {
+          if (cancelledRef.current) break;
           nextResults.push({
             id: item.id,
             fileName: outputName,
@@ -268,25 +303,26 @@ export default function App() {
         const alreadyFailed = nextResults.some((r) => r.id === item.id);
         if (!alreadyFailed && videoReadyRef.current && videoEncoderRef.current) {
           setVideoPulse(true);
+          setVideoElapsed("");
+          setVideoPercent(-1);
           const t0 = Date.now();
           const timer = setInterval(() => {
             const sec = Math.round((Date.now() - t0) / 1000);
             const min = Math.floor(sec / 60);
-            const s = sec % 60;
-            const elapsed = min > 0 ? `${min}m ${s}s` : `${s}s`;
-            setProgressDetail((prev) =>
-              prev.includes("Encoding video...")
-                ? `Encoding video (${elapsed})`
-                : `Working... ${elapsed}`
-            );
+            const s = String(sec % 60).padStart(2, "0");
+            setVideoElapsed(min > 0 ? `${min}:${s}` : `0:${s}`);
           }, 1000);
 
           try {
-            setProgressDetail("Reading video file...");
+            setProgressDetail("Encoding video...");
             const result = await compressVideo(videoEncoderRef.current, item.file, {
               crf: videoCrf,
               format: videoFormat,
             });
+            if (cancelledRef.current) {
+              clearInterval(timer);
+              break;
+            }
             nextResults.push({
               id: item.id,
               fileName: outputName,
@@ -297,6 +333,10 @@ export default function App() {
               mediaType: "video",
             });
           } catch (err) {
+            if (cancelledRef.current) {
+              clearInterval(timer);
+              break;
+            }
             nextResults.push({
               id: item.id,
               fileName: outputName,
@@ -307,6 +347,8 @@ export default function App() {
           } finally {
             clearInterval(timer);
             setVideoPulse(false);
+            setVideoElapsed("");
+            setVideoPercent(-1);
           }
         }
       }
@@ -315,8 +357,16 @@ export default function App() {
       updateProgress(processed, total);
     }
 
-    imageWorker.terminate();
+    if (imageWorkerRef.current) {
+      imageWorkerRef.current.terminate();
+      imageWorkerRef.current = null;
+    }
     setProgressDetail("");
+    setVideoElapsed("");
+    setVideoPercent(-1);
+    setVideoPulse(false);
+
+    const wasCancelled = cancelledRef.current;
 
     const deduped = deduplicateNames(nextResults);
     let totalOriginal = 0;
@@ -330,7 +380,15 @@ export default function App() {
       }
     });
 
-    if (successCount > 0) {
+    if (wasCancelled && successCount === 0) {
+      setTotalSavedText("Cancelled.");
+    } else if (wasCancelled && successCount > 0) {
+      const savedTotal = totalOriginal - totalCompressed;
+      const savedPctTotal = totalOriginal > 0 ? Math.round((savedTotal / totalOriginal) * 100) : 0;
+      setTotalSavedText(
+        `Cancelled — ${successCount} file${successCount > 1 ? "s" : ""} completed: ${formatBytes(totalOriginal)} -> ${formatBytes(totalCompressed)} (${savedPctTotal >= 0 ? "-" : "+"}${Math.abs(savedPctTotal)}%)`
+      );
+    } else if (successCount > 0) {
       const savedTotal = totalOriginal - totalCompressed;
       const savedPctTotal = totalOriginal > 0 ? Math.round((savedTotal / totalOriginal) * 100) : 0;
       setTotalSavedText(
@@ -416,6 +474,9 @@ export default function App() {
           progress={progress}
           progressDetail={progressDetail}
           isVideoPulse={videoPulse}
+          videoElapsed={videoElapsed}
+          videoPercent={videoPercent}
+          onCancel={cancelCompression}
         />
 
         <ResultsSection
