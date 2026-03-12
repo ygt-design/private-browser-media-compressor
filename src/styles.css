@@ -1,10 +1,5 @@
-/* ============================================================
-   WebP Image Compressor — Styles (Black & White / JetBrains Mono)
-   ============================================================ */
-
 @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&display=swap');
 
-/* --- Reset & Base --- */
 *, *::before, *::after {
   box-sizing: border-box;
   margin: 0;
