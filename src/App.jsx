@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import JSZip from "jszip";
 import Header from "./components/Header";
 import DropZone from "./components/DropZone";
@@ -9,12 +9,10 @@ import ResultsSection from "./components/ResultsSection";
 import Footer from "./components/Footer";
 import {
   deduplicateNames,
-  fileType,
   formatBytes,
   getOutputName,
-  isAccepted,
+  isImage,
 } from "./utils/media";
-import { VideoEncoder, compressVideo } from "./utils/videoEncoder";
 import "./styles.css";
 
 function encodeImageInWorker(worker, data) {
@@ -40,32 +38,25 @@ export default function App() {
   const [queue, setQueue] = useState([]);
   const [results, setResults] = useState([]);
   const [isProcessing, setIsProcessing] = useState(false);
-  const [quality, setQuality] = useState(92);
+  const [quality, setQuality] = useState(80);
   const [lossless, setLossless] = useState(false);
   const [imageFormat, setImageFormat] = useState("webp");
-  const [videoCrf, setVideoCrf] = useState(23);
-  const [videoFormat, setVideoFormat] = useState("mp4");
+  const [width, setWidth] = useState("");
+  const [height, setHeight] = useState("");
   const [progress, setProgress] = useState({ done: 0, total: 0, percent: 0 });
   const [progressDetail, setProgressDetail] = useState("");
-  const [videoElapsed, setVideoElapsed] = useState("");
-  const [videoPercent, setVideoPercent] = useState(-1);
   const [showProgress, setShowProgress] = useState(false);
-  const [videoPulse, setVideoPulse] = useState(false);
   const [totalSavedText, setTotalSavedText] = useState("");
+  const [estimates, setEstimates] = useState({});
+  const [isEstimating, setIsEstimating] = useState(false);
 
   const nextIdRef = useRef(0);
-  const videoEncoderRef = useRef(null);
-  const videoReadyRef = useRef(false);
   const cancelledRef = useRef(false);
   const imageWorkerRef = useRef(null);
+  const estimationWorkerRef = useRef(null);
+  const estimationGenRef = useRef(0);
 
-  const hasImages = useMemo(() => queue.some((f) => f.type === "image"), [queue]);
-  const hasVideos = useMemo(() => queue.some((f) => f.type === "video"), [queue]);
-  const showVideoCallout =
-    showProgress &&
-    (videoPulse ||
-      progressDetail.toLowerCase().includes("video") ||
-      progressDetail.toLowerCase().includes("encoding"));
+  const hasImages = queue.length > 0;
 
   useEffect(() => {
     if (imageFormat !== "webp" && lossless) {
@@ -73,58 +64,88 @@ export default function App() {
     }
   }, [imageFormat, lossless]);
 
-  // Cleanup only on unmount — not on every queue/results change
+  // Terminate any estimation worker on unmount.
   useEffect(() => {
     return () => {
-      if (videoEncoderRef.current) videoEncoderRef.current.terminate();
+      if (estimationWorkerRef.current) estimationWorkerRef.current.terminate();
     };
   }, []);
 
-  const generateVideoThumb = (id, file) => {
-    const video = document.createElement("video");
-    video.preload = "metadata";
-    video.muted = true;
-    video.playsInline = true;
-    const url = URL.createObjectURL(file);
-    video.src = url;
+  // Auto-preview: debounced background encode to predict output sizes before
+  // the user compresses. Re-runs whenever files or settings change.
+  useEffect(() => {
+    if (isProcessing) return;
+    if (!queue.length) {
+      setEstimates({});
+      setIsEstimating(false);
+      return;
+    }
 
-    video.addEventListener("loadeddata", () => {
-      video.currentTime = 0.1;
-    });
+    const handle = setTimeout(() => {
+      const gen = ++estimationGenRef.current;
+      if (estimationWorkerRef.current) {
+        estimationWorkerRef.current.terminate();
+        estimationWorkerRef.current = null;
+      }
+      const worker = new Worker(new URL("./imageWorker.js", import.meta.url), {
+        type: "module",
+      });
+      estimationWorkerRef.current = worker;
+      setIsEstimating(true);
 
-    video.addEventListener("seeked", () => {
-      const canvas = document.createElement("canvas");
-      canvas.width = 88;
-      canvas.height = 88;
-      const ctx = canvas.getContext("2d");
-      const vw = video.videoWidth;
-      const vh = video.videoHeight;
-      const size = Math.min(vw, vh);
-      const sx = (vw - size) / 2;
-      const sy = (vh - size) / 2;
-      ctx.drawImage(video, sx, sy, size, size, 0, 0, 88, 88);
-      const thumbUrl = canvas.toDataURL("image/jpeg", 0.5);
-      URL.revokeObjectURL(url);
+      (async () => {
+        const next = {};
+        for (const item of queue) {
+          if (estimationGenRef.current !== gen) return;
+          try {
+            const arrayBuffer = await item.file.arrayBuffer();
+            if (estimationGenRef.current !== gen) return;
+            const result = await encodeImageInWorker(worker, {
+              id: item.id,
+              fileName: "",
+              arrayBuffer,
+              quality,
+              lossless,
+              outputFormat: imageFormat,
+              width,
+              height,
+            });
+            if (estimationGenRef.current !== gen) return;
+            next[item.id] = result.success
+              ? {
+                  compressedSize: result.compressedSize,
+                  width: result.width,
+                  height: result.height,
+                }
+              : { error: true };
+          } catch {
+            if (estimationGenRef.current !== gen) return;
+            next[item.id] = { error: true };
+          }
+          if (estimationGenRef.current !== gen) return;
+          setEstimates({ ...next });
+        }
+        if (estimationGenRef.current === gen) {
+          setIsEstimating(false);
+          if (estimationWorkerRef.current === worker) {
+            worker.terminate();
+            estimationWorkerRef.current = null;
+          }
+        }
+      })();
+    }, 400);
 
-      setQueue((prev) => prev.map((f) => (f.id === id ? { ...f, thumbUrl } : f)));
-    });
-
-    video.addEventListener("error", () => {
-      URL.revokeObjectURL(url);
-    });
-  };
+    return () => clearTimeout(handle);
+  }, [queue, quality, lossless, imageFormat, width, height, isProcessing]);
 
   const addFiles = (files) => {
     if (isProcessing) return;
-    const accepted = files.filter(isAccepted);
+    const accepted = files.filter(isImage);
     if (!accepted.length) return;
 
     const nextItems = accepted.map((file) => {
       const id = nextIdRef.current++;
-      const type = fileType(file);
-      const thumbUrl = type === "image" ? URL.createObjectURL(file) : "";
-      if (type === "video") generateVideoThumb(id, file);
-      return { id, file, type, thumbUrl };
+      return { id, file, type: "image", thumbUrl: URL.createObjectURL(file) };
     });
 
     setQueue((prev) => [...prev, ...nextItems]);
@@ -152,29 +173,6 @@ export default function App() {
     });
   };
 
-  const loadVideoEncoder = async () => {
-    if (videoReadyRef.current && videoEncoderRef.current) return;
-    setProgressDetail("Loading video encoder (~30 MB, first time only)...");
-
-    const enc = new VideoEncoder();
-    enc.onProgress = ({ progress: p }) => {
-      if (p > 0 && p <= 1) {
-        const pct = Math.round(p * 100);
-        setVideoPercent(pct);
-        setProgress((prev) => {
-          const base = prev.total > 0 ? (prev.done / prev.total) * 100 : 0;
-          const slice = prev.total > 0 ? (1 / prev.total) * 100 : 0;
-          return { ...prev, percent: Math.round(base + slice * p) };
-        });
-      }
-    };
-
-    await enc.load();
-    videoEncoderRef.current = enc;
-    videoReadyRef.current = true;
-    setProgressDetail("");
-  };
-
   const updateProgress = (done, total) => {
     const pct = total > 0 ? Math.round((done / total) * 100) : 0;
     setProgress({ done, total, percent: pct });
@@ -188,29 +186,27 @@ export default function App() {
       imageWorkerRef.current = null;
     }
 
-    if (videoEncoderRef.current) {
-      videoEncoderRef.current.terminate();
-      videoEncoderRef.current = null;
-      videoReadyRef.current = false;
-    }
-
     // Reset UI directly — the async loop may be stuck on a hanging promise
     setIsProcessing(false);
     setShowProgress(false);
     setProgressDetail("");
-    setVideoPulse(false);
-    setVideoElapsed("");
-    setVideoPercent(-1);
     setTotalSavedText("Cancelled.");
   };
 
   const startCompression = async () => {
     if (!queue.length || isProcessing) return;
 
+    // Abort any in-flight estimation so it doesn't compete for CPU.
+    estimationGenRef.current++;
+    if (estimationWorkerRef.current) {
+      estimationWorkerRef.current.terminate();
+      estimationWorkerRef.current = null;
+    }
+    setIsEstimating(false);
+
     cancelledRef.current = false;
     setIsProcessing(true);
     setShowProgress(true);
-    setVideoPulse(false);
     setProgressDetail("");
     setResults((prev) => {
       prev.forEach((r) => {
@@ -220,137 +216,72 @@ export default function App() {
     });
     setTotalSavedText("");
 
-    const imageQuality = lossless ? 1 : quality / 100;
     const total = queue.length;
     let processed = 0;
     const nextResults = [];
     updateProgress(0, total);
 
-    if (hasVideos) {
-      try {
-        await loadVideoEncoder();
-      } catch (err) {
-        queue.forEach((item) => {
-          if (item.type === "video") {
-            nextResults.push({
-              id: item.id,
-              fileName: getOutputName(item.file.name, "video", videoFormat, imageFormat),
-              error: `Failed to load video encoder: ${err.message || String(err)}`,
-              originalSize: item.file.size,
-              mediaType: "video",
-            });
-          }
-        });
-      }
-    }
-
-    const imageWorker = new Worker("/worker.js");
+    const imageWorker = new Worker(new URL("./imageWorker.js", import.meta.url), {
+      type: "module",
+    });
     imageWorkerRef.current = imageWorker;
 
+    let first = true;
     for (const item of queue) {
       if (cancelledRef.current) break;
-      const outputName = getOutputName(item.file.name, item.type, videoFormat, imageFormat);
+      const outputName = getOutputName(item.file.name, imageFormat);
 
-      if (item.type === "image") {
-        try {
-          const arrayBuffer = await item.file.arrayBuffer();
-          if (cancelledRef.current) break;
-          const result = await encodeImageInWorker(imageWorker, {
-            id: item.id,
-            fileName: outputName,
-            arrayBuffer,
-            quality: imageQuality,
-            lossless,
-            outputFormat: imageFormat,
+      if (first) {
+        setProgressDetail("Loading codec...");
+        first = false;
+      }
+
+      try {
+        const arrayBuffer = await item.file.arrayBuffer();
+        if (cancelledRef.current) break;
+        const result = await encodeImageInWorker(imageWorker, {
+          id: item.id,
+          fileName: outputName,
+          arrayBuffer,
+          quality,
+          lossless,
+          outputFormat: imageFormat,
+          width,
+          height,
+        });
+
+        if (cancelledRef.current) break;
+        setProgressDetail("");
+        if (result.success) {
+          const blob = new Blob([result.resultBuffer], {
+            type: result.outputMime || "image/webp",
           });
-
-          if (cancelledRef.current) break;
-          if (result.success) {
-            const blob = new Blob([result.resultBuffer], {
-              type: result.outputMime || "image/webp",
-            });
-            nextResults.push({
-              id: result.id,
-              fileName: result.fileName,
-              blob,
-              downloadUrl: URL.createObjectURL(blob),
-              originalSize: result.originalSize,
-              compressedSize: result.compressedSize,
-              width: result.width,
-              height: result.height,
-              mediaType: "image",
-            });
-          } else {
-            nextResults.push({
-              id: result.id,
-              fileName: result.fileName,
-              error: result.error,
-              originalSize: item.file.size,
-              mediaType: "image",
-            });
-          }
-        } catch (err) {
-          if (cancelledRef.current) break;
           nextResults.push({
-            id: item.id,
-            fileName: outputName,
-            error: err.message || "Processing failed",
+            id: result.id,
+            fileName: result.fileName,
+            blob,
+            downloadUrl: URL.createObjectURL(blob),
+            originalSize: result.originalSize,
+            compressedSize: result.compressedSize,
+            width: result.width,
+            height: result.height,
+          });
+        } else {
+          nextResults.push({
+            id: result.id,
+            fileName: result.fileName,
+            error: result.error,
             originalSize: item.file.size,
-            mediaType: "image",
           });
         }
-      } else {
-        const alreadyFailed = nextResults.some((r) => r.id === item.id);
-        if (!alreadyFailed && videoReadyRef.current && videoEncoderRef.current) {
-          setVideoPulse(true);
-          setVideoElapsed("");
-          setVideoPercent(-1);
-          const t0 = Date.now();
-          const timer = setInterval(() => {
-            const sec = Math.round((Date.now() - t0) / 1000);
-            const min = Math.floor(sec / 60);
-            const s = String(sec % 60).padStart(2, "0");
-            setVideoElapsed(min > 0 ? `${min}:${s}` : `0:${s}`);
-          }, 1000);
-
-          try {
-            setProgressDetail("Encoding video...");
-            const result = await compressVideo(videoEncoderRef.current, item.file, {
-              crf: videoCrf,
-              format: videoFormat,
-            });
-            if (cancelledRef.current) {
-              clearInterval(timer);
-              break;
-            }
-            nextResults.push({
-              id: item.id,
-              fileName: outputName,
-              blob: result.blob,
-              downloadUrl: URL.createObjectURL(result.blob),
-              originalSize: item.file.size,
-              compressedSize: result.blob.size,
-              mediaType: "video",
-            });
-          } catch (err) {
-            if (cancelledRef.current) {
-              clearInterval(timer);
-              break;
-            }
-            nextResults.push({
-              id: item.id,
-              fileName: outputName,
-              error: err.message || "Video encoding failed",
-              originalSize: item.file.size,
-              mediaType: "video",
-            });
-          } finally {
-            clearInterval(timer);
-            setVideoPulse(false);
-            setVideoElapsed("");
-            setVideoPercent(-1);
-          }
-        }
+      } catch (err) {
+        if (cancelledRef.current) break;
+        nextResults.push({
+          id: item.id,
+          fileName: outputName,
+          error: err.message || "Processing failed",
+          originalSize: item.file.size,
+        });
       }
 
       processed += 1;
@@ -362,9 +293,6 @@ export default function App() {
       imageWorkerRef.current = null;
     }
     setProgressDetail("");
-    setVideoElapsed("");
-    setVideoPercent(-1);
-    setVideoPulse(false);
 
     const wasCancelled = cancelledRef.current;
 
@@ -435,35 +363,25 @@ export default function App() {
       </section>
 
       <section className="app__right">
-        {showVideoCallout ? (
-          <section className="video-callout" aria-live="polite">
-            <span className="video-callout__dot" />
-            <p>
-              {progressDetail && progressDetail.toLowerCase().includes("video")
-                ? progressDetail
-                : "Video compression is in progress..."}
-            </p>
-          </section>
-        ) : null}
-
         <SettingsPanel
           hasImages={hasImages}
-          hasVideos={hasVideos}
           quality={quality}
           setQuality={setQuality}
           lossless={lossless}
           setLossless={setLossless}
           imageFormat={imageFormat}
           setImageFormat={setImageFormat}
-          videoCrf={videoCrf}
-          setVideoCrf={setVideoCrf}
-          videoFormat={videoFormat}
-          setVideoFormat={setVideoFormat}
+          width={width}
+          setWidth={setWidth}
+          height={height}
+          setHeight={setHeight}
         />
 
         <QueueSection
           queue={queue}
           isProcessing={isProcessing}
+          estimates={estimates}
+          isEstimating={isEstimating}
           onRemove={removeFile}
           onClearAll={clearQueue}
           onCompress={startCompression}
@@ -473,9 +391,6 @@ export default function App() {
           visible={showProgress}
           progress={progress}
           progressDetail={progressDetail}
-          isVideoPulse={videoPulse}
-          videoElapsed={videoElapsed}
-          videoPercent={videoPercent}
           onCancel={cancelCompression}
         />
 

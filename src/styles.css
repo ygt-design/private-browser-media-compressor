@@ -333,6 +333,12 @@ body {
   margin-top: 8px;
 }
 
+.settings__hint {
+  font-size: 0.72rem;
+  color: var(--color-text-dim);
+  margin-top: 10px;
+}
+
 .settings__lossless {
   display: flex;
   align-items: center;
@@ -452,6 +458,29 @@ body {
 .queue__file-size {
   font-size: 0.72rem;
   color: var(--color-text-dim);
+}
+
+.queue__estimate {
+  color: var(--color-text);
+  font-weight: 600;
+}
+
+.queue__estimate--pending,
+.queue__estimate--error {
+  color: var(--color-text-dim);
+  font-weight: 400;
+}
+
+.queue__heading {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.queue__estimate-total {
+  font-size: 0.72rem;
+  color: var(--color-text-muted);
 }
 
 .queue__type-badge {

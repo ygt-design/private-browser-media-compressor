@@ -1,12 +1,12 @@
 import { useRef, useState } from "react";
-import { isAccepted } from "../utils/media";
+import { isImage } from "../utils/media";
 
 export default function DropZone({ disabled, onFilesSelected }) {
   const inputRef = useRef(null);
   const [isDragActive, setIsDragActive] = useState(false);
 
   const pickFiles = (files) => {
-    const accepted = Array.from(files || []).filter(isAccepted);
+    const accepted = Array.from(files || []).filter(isImage);
     if (accepted.length > 0) onFilesSelected(accepted);
   };
 
@@ -62,7 +62,7 @@ export default function DropZone({ disabled, onFilesSelected }) {
           Browse Files
         </button>
         <p className="drop-zone__hint">
-          Images: JPEG, PNG, WebP, GIF, BMP - Videos: MP4, MOV, WebM, AVI, MKV
+          Images: JPEG, PNG, WebP, GIF, BMP
         </p>
       </div>
       <input
@@ -70,7 +70,7 @@ export default function DropZone({ disabled, onFilesSelected }) {
         type="file"
         multiple
         hidden
-        accept="image/jpeg,image/png,image/webp,image/gif,image/bmp,video/mp4,video/quicktime,video/webm,video/x-msvideo,video/x-matroska,video/avi,video/mov,.mkv,.mov,.avi"
+        accept="image/jpeg,image/png,image/webp,image/gif,image/bmp"
         onChange={(e) => {
           pickFiles(e.target.files);
           e.target.value = "";

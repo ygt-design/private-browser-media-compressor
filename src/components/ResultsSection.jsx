@@ -31,28 +31,10 @@ function ResultItem({ item }) {
 
   return (
     <li className="results__item">
-      {item.mediaType === "video" ? (
-        <div
-          className="results__thumb"
-          style={{
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            fontSize: "1.3rem",
-            color: "var(--color-text-dim)",
-          }}
-        >
-          &#9654;
-        </div>
-      ) : (
-        <img className="results__thumb" src={item.downloadUrl} alt="" />
-      )}
+      <img className="results__thumb" src={item.downloadUrl} alt="" />
 
       <div className="results__file-info">
-        <div className="results__file-name">
-          {item.fileName}
-          <span className="queue__type-badge">{item.mediaType === "video" ? "vid" : "img"}</span>
-        </div>
+        <div className="results__file-name">{item.fileName}</div>
         <div className="results__file-meta">
           <span>
             {formatBytes(item.originalSize)} -&gt; {formatBytes(item.compressedSize)}

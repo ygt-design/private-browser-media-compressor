@@ -3,6 +3,10 @@ import react from "@vitejs/plugin-react";
 
 export default defineConfig({
   plugins: [react()],
+  optimizeDeps: {
+    exclude: ["@jsquash/webp", "@jsquash/jpeg", "@jsquash/oxipng", "@jsquash/resize"],
+  },
+  worker: { format: "es" },
   server: {
     headers: {
       "Cross-Origin-Opener-Policy": "same-origin",

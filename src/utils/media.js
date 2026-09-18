@@ -2,31 +2,6 @@ export function isImage(file) {
   return file.type.startsWith("image/");
 }
 
-export function isVideo(file) {
-  if (file.type.startsWith("video/")) return true;
-  const ext = file.name.split(".").pop()?.toLowerCase() || "";
-  return [
-    "mp4",
-    "mov",
-    "webm",
-    "avi",
-    "mkv",
-    "m4v",
-    "flv",
-    "ogv",
-    "3gp",
-    "wmv",
-  ].includes(ext);
-}
-
-export function isAccepted(file) {
-  return isImage(file) || isVideo(file);
-}
-
-export function fileType(file) {
-  return isVideo(file) ? "video" : "image";
-}
-
 export function formatBytes(bytes) {
   if (bytes === 0) return "0 B";
   const k = 1024;
@@ -35,10 +10,10 @@ export function formatBytes(bytes) {
   return `${parseFloat((bytes / Math.pow(k, i)).toFixed(1))} ${sizes[i]}`;
 }
 
-export function getOutputName(originalName, type, videoFormat, imageFormat = "webp") {
+export function getOutputName(originalName, format) {
   const dot = originalName.lastIndexOf(".");
   const base = dot > 0 ? originalName.substring(0, dot) : originalName;
-  return type === "video" ? `${base}.${videoFormat}` : `${base}.${imageFormat}`;
+  return `${base}.${format}`;
 }
 
 export function deduplicateNames(items) {
